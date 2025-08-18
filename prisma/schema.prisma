@@ -1,0 +1,45 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id       Int    @id @default(autoincrement())
+  email    String @unique
+  password String
+  role     String // "solicitante", "responsavel", "solicitante_ti", "responsavel_ti"
+}
+
+model Settings {
+  id          Int    @id @default(1)
+  sector      String
+  nameOrStore String
+  // for a single-tenant global settings record; if you need per-user settings later: add userId and relation
+}
+
+model Order {
+  id          Int      @id @default(autoincrement())
+  item        String
+  qty         Int
+  notes       String?
+  sector      String?
+  nameOrStore String?
+  role        String?
+  createdAt   DateTime @default(now())
+}
+
+model TiTicket {
+  id          Int      @id @default(autoincrement())
+  title       String
+  description String
+  sector      String?
+  nameOrStore String?
+  createdBy   String?  // role or email
+  status      String   @default("aberto")
+  createdAt   DateTime @default(now())
+}
