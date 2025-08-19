@@ -12,14 +12,13 @@ model User {
   id       Int    @id @default(autoincrement())
   email    String @unique
   password String
-  role     String // "solicitante", "responsavel", "solicitante_ti", "responsavel_ti"
+  role     String
 }
 
 model Settings {
-  id          Int    @id @default(1)
+  id          Int    @id
   sector      String
   nameOrStore String
-  // for a single-tenant global settings record; if you need per-user settings later: add userId and relation
 }
 
 model Order {
@@ -29,8 +28,11 @@ model Order {
   notes       String?
   sector      String?
   nameOrStore String?
-  role        String?
+  status      String   @default("aberto") // aberto | em_andamento | finalizado
+  response    String?                       // resposta do responsável
+  done        Boolean  @default(false)
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model TiTicket {
@@ -39,7 +41,9 @@ model TiTicket {
   description String
   sector      String?
   nameOrStore String?
-  createdBy   String?  // role or email
   status      String   @default("aberto")
+  response    String?
+  done        Boolean  @default(false)
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }

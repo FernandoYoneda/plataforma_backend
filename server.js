@@ -1,184 +1,172 @@
 // server.js
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { PrismaClient } = require("@prisma/client");
+// const bcrypt = require("bcryptjs"); // use se tiver senha com hash
 
 const prisma = new PrismaClient();
 const app = express();
 
-// ---------------------------
-// PORTA & AMBIENTE
-// ---------------------------
-const port = process.env.PORT || 10000;
-
-// ---------------------------
-// C O R S  (whitelist + preflight)
-// ---------------------------
-const fromEnv = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || "")
+const PORT = process.env.PORT || 10000;
+const allowed = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const isProd = process.env.NODE_ENV === "production";
-const whitelist = [...fromEnv, ...(isProd ? [] : ["http://localhost:3000"])];
-
-const corsOptions = {
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    if (whitelist.includes(origin)) return cb(null, true);
-    return cb(new Error(`Not allowed by CORS: ${origin}`));
-  },
-  methods: "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
-  allowedHeaders: ["Content-Type", "Authorization"],
-};
-
-app.options("*", cors(corsOptions));
-app.use(cors(corsOptions));
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (allowed.length === 0 || allowed.includes(origin))
+        return cb(null, true);
+      return cb(new Error("Not allowed by CORS: " + origin));
+    },
+    credentials: true,
+  })
+);
 app.use(express.json());
 
-// ---------------------------
-// HEALTH-CHECK
-// ---------------------------
-app.get("/", (_req, res) =>
-  res.json({ ok: true, service: "pedidos+ti-backend", db: "postgres" })
-);
-
-// ---------------------------
-/** LOGIN
- *  Autentica por email+senha (texto puro neste exemplo de demo, sem hash).
- *  Retorna apenas o role.
- */
+// ---------- AUTH ----------
 app.post("/api/login", async (req, res) => {
   try {
     const email = (req.body?.email || "").trim();
     const password = (req.body?.password || "").trim();
-
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user || user.password !== password) {
-      return res.status(401).json({ error: "Credenciais inválidas" });
-    }
-    return res.json({ role: user.role });
+    if (!user) return res.status(401).json({ error: "Credenciais inválidas" });
+
+    // Se usar hash:
+    // const ok = await bcrypt.compare(password, user.password);
+    const ok = password === user.password;
+    if (!ok) return res.status(401).json({ error: "Credenciais inválidas" });
+
+    res.json({ role: user.role });
   } catch (e) {
     console.error("Login error:", e);
-    return res.status(500).json({ error: "Erro interno" });
+    res.status(500).json({ error: "Erro no login" });
   }
 });
 
-// ---------------------------
-// SETTINGS (único registro id=1)
-// ---------------------------
+// ---------- SETTINGS ----------
 app.get("/api/settings", async (_req, res) => {
-  try {
-    const s = await prisma.settings.findUnique({ where: { id: 1 } });
-    return res.json(s || { sector: "", nameOrStore: "" });
-  } catch (e) {
-    console.error("GET /api/settings", e);
-    return res.status(500).json({ error: "Erro ao carregar configurações" });
-  }
+  const s = await prisma.settings.findUnique({ where: { id: 1 } });
+  res.json(s || { id: 1, sector: "", nameOrStore: "" });
 });
 
 app.post("/api/settings", async (req, res) => {
-  try {
-    const sector = (req.body?.sector || "").trim();
-    const nameOrStore = (req.body?.nameOrStore || "").trim();
-
-    const s = await prisma.settings.upsert({
-      where: { id: 1 },
-      update: { sector, nameOrStore },
-      create: { id: 1, sector, nameOrStore },
-    });
-    return res.status(200).json(s);
-  } catch (e) {
-    console.error("POST /api/settings", e);
-    return res.status(500).json({ error: "Erro ao salvar configurações" });
-  }
+  const { sector, nameOrStore } = req.body || {};
+  const saved = await prisma.settings.upsert({
+    where: { id: 1 },
+    update: { sector: sector || "", nameOrStore: nameOrStore || "" },
+    create: { id: 1, sector: sector || "", nameOrStore: nameOrStore || "" },
+  });
+  res.json(saved);
 });
 
-// ---------------------------
-// ORDERS
-// ---------------------------
-app.get("/api/orders", async (_req, res) => {
-  try {
-    const items = await prisma.order.findMany({
-      orderBy: { createdAt: "desc" },
-    });
-    return res.json(items);
-  } catch (e) {
-    console.error("GET /api/orders", e);
-    return res.status(500).json({ error: "Erro ao carregar pedidos" });
-  }
+// ---------- ORDERS ----------
+app.get("/api/orders", async (req, res) => {
+  const { sector, nameOrStore } = req.query;
+  const where = {};
+  if (sector) where.sector = sector;
+  if (nameOrStore) where.nameOrStore = nameOrStore;
+
+  const list = await prisma.order.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+  });
+  res.json(list);
 });
 
 app.post("/api/orders", async (req, res) => {
-  try {
-    const { item, qty, notes, sector, nameOrStore, role } = req.body;
-    if (!item || !qty)
-      return res
-        .status(400)
-        .json({ error: "Item e quantidade são obrigatórios" });
+  const { item, qty, notes, sector, nameOrStore } = req.body || {};
+  if (!item || !qty)
+    return res
+      .status(400)
+      .json({ error: "Item e quantidade são obrigatórios" });
 
-    const created = await prisma.order.create({
-      data: {
-        item: String(item).trim(),
-        qty: Number(qty),
-        notes: (notes || "").trim() || null,
-        sector: sector || null,
-        nameOrStore: nameOrStore || null,
-        role: role || null,
-      },
-    });
-    return res.status(201).json(created);
-  } catch (e) {
-    console.error("POST /api/orders", e);
-    return res.status(500).json({ error: "Erro ao criar pedido" });
-  }
+  const created = await prisma.order.create({
+    data: { item, qty: Number(qty), notes: notes || null, sector, nameOrStore },
+  });
+  res.status(201).json(created);
 });
 
-// ---------------------------
-// TI TICKETS
-// ---------------------------
-app.get("/api/ti/tickets", async (_req, res) => {
-  try {
-    const tickets = await prisma.tiTicket.findMany({
-      orderBy: { createdAt: "desc" },
-    });
-    return res.json(tickets);
-  } catch (e) {
-    console.error("GET /api/ti/tickets", e);
-    return res.status(500).json({ error: "Erro ao listar chamados" });
-  }
+// marcar “feito” (ou desfazer)
+app.patch("/api/orders/:id/done", async (req, res) => {
+  const id = Number(req.params.id);
+  const { done } = req.body || {};
+  const updated = await prisma.order.update({
+    where: { id },
+    data: { done: !!done, status: !!done ? "finalizado" : "aberto" },
+  });
+  res.json(updated);
+});
+
+// atualizar status/response
+app.patch("/api/orders/:id/status", async (req, res) => {
+  const id = Number(req.params.id);
+  const { status, response } = req.body || {};
+  const data = {};
+  if (status) data.status = status;
+  if (typeof response === "string") data.response = response;
+  if (status === "finalizado") data.done = true;
+  if (status === "aberto") data.done = false;
+
+  const updated = await prisma.order.update({ where: { id }, data });
+  res.json(updated);
+});
+
+// ---------- TI TICKETS ----------
+app.get("/api/ti/tickets", async (req, res) => {
+  const { sector, nameOrStore } = req.query;
+  const where = {};
+  if (sector) where.sector = sector;
+  if (nameOrStore) where.nameOrStore = nameOrStore;
+
+  const list = await prisma.tiTicket.findMany({
+    where,
+    orderBy: { createdAt: "asc" },
+  });
+  res.json(list);
 });
 
 app.post("/api/ti/tickets", async (req, res) => {
-  try {
-    const { title, description, sector, nameOrStore, createdBy } = req.body;
-    if (!title || !description) {
-      return res
-        .status(400)
-        .json({ error: "Título e descrição são obrigatórios" });
-    }
+  const { title, description, sector, nameOrStore } = req.body || {};
+  if (!title || !description)
+    return res
+      .status(400)
+      .json({ error: "Título e descrição são obrigatórios" });
 
-    const created = await prisma.tiTicket.create({
-      data: {
-        title: String(title).trim(),
-        description: String(description).trim(),
-        sector: sector || null,
-        nameOrStore: nameOrStore || null,
-        createdBy: createdBy || null,
-        status: "aberto",
-      },
-    });
-    return res.status(201).json(created);
-  } catch (e) {
-    console.error("POST /api/ti/tickets", e);
-    return res.status(500).json({ error: "Erro ao abrir chamado" });
-  }
+  const created = await prisma.tiTicket.create({
+    data: { title, description, sector, nameOrStore },
+  });
+  res.status(201).json(created);
 });
 
-// ---------------------------
-// START
-// ---------------------------
-app.listen(port, () => {
-  console.log(`Servidor rodando na porta ${port}`);
-  console.log("CORS whitelist:", whitelist);
+app.patch("/api/ti/tickets/:id/done", async (req, res) => {
+  const id = Number(req.params.id);
+  const { done } = req.body || {};
+  const updated = await prisma.tiTicket.update({
+    where: { id },
+    data: { done: !!done, status: !!done ? "finalizado" : "aberto" },
+  });
+  res.json(updated);
+});
+
+app.patch("/api/ti/tickets/:id/status", async (req, res) => {
+  const id = Number(req.params.id);
+  const { status, response } = req.body || {};
+  const data = {};
+  if (status) data.status = status;
+  if (typeof response === "string") data.response = response;
+  if (status === "finalizado") data.done = true;
+  if (status === "aberto") data.done = false;
+
+  const updated = await prisma.tiTicket.update({ where: { id }, data });
+  res.json(updated);
+});
+
+// ---------- START ----------
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
+  console.log("CORS whitelist:", allowed);
 });
