@@ -1,4 +1,4 @@
-// server.js (COMPLETO)
+// server.js (COMPLETO, com CORS robusto + health + error handler)
 require("dotenv").config();
 const express = require("express");
 const { PrismaClient } = require("@prisma/client");
@@ -8,33 +8,31 @@ const app = express();
 
 const PORT = process.env.PORT || 10000;
 
-// --------- CORS ROBUSTO (sem depender de biblioteca) ---------
+// ----------------- CORS ROBUSTO -----------------
 const ALLOWED = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
 /**
- * Ex.: ALLOWED_ORIGINS no Render:
- * https://plataforma-frontend.onrender.com,http://localhost:3000
+ * Exemplo de ALLOWED_ORIGINS no Render:
+ *   https://plataforma-frontend.onrender.com,http://localhost:3000
  */
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  // Permite variar por origem (evita cache errado por proxies)
   res.header("Vary", "Origin");
 
   if (origin && (ALLOWED.length === 0 || ALLOWED.includes(origin))) {
     res.header("Access-Control-Allow-Origin", origin);
     res.header("Access-Control-Allow-Credentials", "true");
   }
-  // Métodos e headers padrão p/ preflight
+
   res.header(
     "Access-Control-Allow-Methods",
     "GET,POST,PATCH,PUT,DELETE,OPTIONS"
   );
   res.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
 
-  // Responde preflight sem erro
   if (req.method === "OPTIONS") {
     return res.sendStatus(204);
   }
@@ -43,8 +41,42 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// ---------- AUTH ----------
-app.post("/api/login", async (req, res) => {
+// ----------------- ROTAS DE DIAGNÓSTICO -----------------
+app.get("/api/health", async (_req, res) => {
+  try {
+    // Verifica conexão básica com o banco
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({
+      ok: true,
+      db: "ok",
+      allowedOrigins: ALLOWED,
+      env: {
+        hasDatabaseUrl: !!process.env.DATABASE_URL,
+        nodeEnv: process.env.NODE_ENV || null,
+      },
+    });
+  } catch (e) {
+    console.error("HEALTH ERROR:", e);
+    res.status(500).json({
+      ok: false,
+      error: "DB check failed",
+      message: e.message,
+    });
+  }
+});
+
+app.get("/api/debug/cors", (req, res) => {
+  res.json({
+    originReceived: req.headers.origin || null,
+    allowedOrigins: ALLOWED,
+    corsApplied:
+      !!req.headers.origin &&
+      (ALLOWED.length === 0 || ALLOWED.includes(req.headers.origin)),
+  });
+});
+
+// ----------------- AUTH -----------------
+app.post("/api/login", async (req, res, next) => {
   try {
     const email = (req.body?.email || "").trim();
     const password = (req.body?.password || "").trim();
@@ -56,29 +88,33 @@ app.post("/api/login", async (req, res) => {
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(401).json({ error: "Credenciais inválidas" });
 
-    // ATENÇÃO: se você fez hash no seed, troque p/ bcrypt.compare
+    // Se as senhas no banco estiverem em texto (seed simples):
     const ok = password === user.password;
+
+    // Se estiver usando bcrypt no seed, troque por:
+    // const bcrypt = require("bcryptjs");
+    // const ok = await bcrypt.compare(password, user.password);
+
     if (!ok) return res.status(401).json({ error: "Credenciais inválidas" });
 
     return res.json({ role: user.role });
   } catch (e) {
     console.error("Login error:", e);
-    return res.status(500).json({ error: "Erro no login" });
+    next(e);
   }
 });
 
-// ---------- SETTINGS ----------
-app.get("/api/settings", async (_req, res) => {
+// ----------------- SETTINGS -----------------
+app.get("/api/settings", async (_req, res, next) => {
   try {
     const s = await prisma.settings.findUnique({ where: { id: 1 } });
-    return res.json(s || { id: 1, sector: "", nameOrStore: "" });
+    res.json(s || { id: 1, sector: "", nameOrStore: "" });
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao buscar settings" });
+    next(e);
   }
 });
 
-app.post("/api/settings", async (req, res) => {
+app.post("/api/settings", async (req, res, next) => {
   try {
     const { sector, nameOrStore } = req.body || {};
     const saved = await prisma.settings.upsert({
@@ -86,15 +122,14 @@ app.post("/api/settings", async (req, res) => {
       update: { sector: sector || "", nameOrStore: nameOrStore || "" },
       create: { id: 1, sector: sector || "", nameOrStore: nameOrStore || "" },
     });
-    return res.json(saved);
+    res.json(saved);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao salvar settings" });
+    next(e);
   }
 });
 
-// ---------- ORDERS ----------
-app.get("/api/orders", async (req, res) => {
+// ----------------- ORDERS (Materiais) -----------------
+app.get("/api/orders", async (req, res, next) => {
   try {
     const { sector, nameOrStore } = req.query;
     const where = {};
@@ -105,38 +140,37 @@ app.get("/api/orders", async (req, res) => {
       where,
       orderBy: { createdAt: "desc" },
     });
-    return res.json(list);
+    res.json(list);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao listar pedidos" });
+    next(e);
   }
 });
 
-app.post("/api/orders", async (req, res) => {
+app.post("/api/orders", async (req, res, next) => {
   try {
     const { item, qty, notes, sector, nameOrStore } = req.body || {};
-    if (!item || !qty)
+    if (!item || !qty) {
       return res
         .status(400)
         .json({ error: "Item e quantidade são obrigatórios" });
+    }
 
     const created = await prisma.order.create({
       data: {
         item,
         qty: Number(qty),
         notes: notes || null,
-        sector,
-        nameOrStore,
+        sector: sector || null,
+        nameOrStore: nameOrStore || null,
       },
     });
-    return res.status(201).json(created);
+    res.status(201).json(created);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao criar pedido" });
+    next(e);
   }
 });
 
-app.patch("/api/orders/:id/done", async (req, res) => {
+app.patch("/api/orders/:id/done", async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { done } = req.body || {};
@@ -144,14 +178,13 @@ app.patch("/api/orders/:id/done", async (req, res) => {
       where: { id },
       data: { done: !!done, status: !!done ? "finalizado" : "aberto" },
     });
-    return res.json(updated);
+    res.json(updated);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao atualizar pedido" });
+    next(e);
   }
 });
 
-app.patch("/api/orders/:id/status", async (req, res) => {
+app.patch("/api/orders/:id/status", async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { status, response } = req.body || {};
@@ -162,15 +195,14 @@ app.patch("/api/orders/:id/status", async (req, res) => {
     if (status === "aberto") data.done = false;
 
     const updated = await prisma.order.update({ where: { id }, data });
-    return res.json(updated);
+    res.json(updated);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao atualizar pedido" });
+    next(e);
   }
 });
 
-// ---------- TI ----------
-app.get("/api/ti/tickets", async (req, res) => {
+// ----------------- TI TICKETS -----------------
+app.get("/api/ti/tickets", async (req, res, next) => {
   try {
     const { sector, nameOrStore } = req.query;
     const where = {};
@@ -181,14 +213,13 @@ app.get("/api/ti/tickets", async (req, res) => {
       where,
       orderBy: { createdAt: "desc" },
     });
-    return res.json(list);
+    res.json(list);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao listar chamados" });
+    next(e);
   }
 });
 
-app.post("/api/ti/tickets", async (req, res) => {
+app.post("/api/ti/tickets", async (req, res, next) => {
   try {
     const { title, description, sector, nameOrStore } = req.body || {};
     if (!title || !description) {
@@ -197,16 +228,21 @@ app.post("/api/ti/tickets", async (req, res) => {
         .json({ error: "Título e descrição são obrigatórios" });
     }
     const created = await prisma.tiTicket.create({
-      data: { title, description, sector, nameOrStore, status: "aberto" },
+      data: {
+        title,
+        description,
+        sector: sector || null,
+        nameOrStore: nameOrStore || null,
+        status: "aberto",
+      },
     });
-    return res.status(201).json(created);
+    res.status(201).json(created);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao criar chamado" });
+    next(e);
   }
 });
 
-app.patch("/api/ti/tickets/:id/done", async (req, res) => {
+app.patch("/api/ti/tickets/:id/done", async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { done } = req.body || {};
@@ -214,14 +250,13 @@ app.patch("/api/ti/tickets/:id/done", async (req, res) => {
       where: { id },
       data: { done: !!done, status: !!done ? "finalizado" : "aberto" },
     });
-    return res.json(updated);
+    res.json(updated);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao atualizar chamado" });
+    next(e);
   }
 });
 
-app.patch("/api/ti/tickets/:id/status", async (req, res) => {
+app.patch("/api/ti/tickets/:id/status", async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { status, response } = req.body || {};
@@ -232,15 +267,27 @@ app.patch("/api/ti/tickets/:id/status", async (req, res) => {
     if (status === "aberto") data.done = false;
 
     const updated = await prisma.tiTicket.update({ where: { id }, data });
-    return res.json(updated);
+    res.json(updated);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Erro ao atualizar chamado" });
+    next(e);
   }
 });
 
-// ---------- START ----------
-app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
-  console.log("CORS whitelist:", ALLOWED);
+// ----------------- ERROR HANDLER GLOBAL -----------------
+app.use((err, _req, res, _next) => {
+  console.error("UNCAUGHT ERROR:", err);
+  const msg = (err && err.message) || "Erro interno no servidor";
+  res.status(500).json({ error: msg });
 });
+
+// ----------------- START -----------------
+(async () => {
+  // Valida variáveis essenciais
+  if (!process.env.DATABASE_URL) {
+    console.warn("⚠️ DATABASE_URL não definida!");
+  }
+  console.log("CORS whitelist (ALLOWED_ORIGINS):", ALLOWED);
+  app.listen(PORT, () => {
+    console.log(`Servidor rodando na porta ${PORT}`);
+  });
+})();
