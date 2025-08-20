@@ -3,7 +3,6 @@ const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 async function main() {
-  // Usuarios de demonstração
   const users = [
     {
       email: "solicitante@exemplo.com",
@@ -35,7 +34,6 @@ async function main() {
     });
   }
 
-  // Settings default (um único registro fixo id=1)
   await prisma.settings.upsert({
     where: { id: 1 },
     update: {},

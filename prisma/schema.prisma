@@ -1,11 +1,11 @@
 // prisma/schema.prisma
-generator client {
-  provider = "prisma-client-js"
-}
-
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
 }
 
 model User {
@@ -22,28 +22,32 @@ model Settings {
 }
 
 model Order {
-  id          Int      @id @default(autoincrement())
+  id          Int       @id @default(autoincrement())
   item        String
   qty         Int
   notes       String?
   sector      String?
   nameOrStore String?
-  status      String   @default("aberto") // aberto | em_andamento | finalizado
-  response    String?                       // resposta do responsável
-  done        Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+
+  status      String    @default("aberto")
+  response    String?
+  done        Boolean   @default(false)
+
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt      @db.Timestamptz(6)
 }
 
 model TiTicket {
-  id          Int      @id @default(autoincrement())
+  id          Int       @id @default(autoincrement())
   title       String
   description String
   sector      String?
   nameOrStore String?
-  status      String   @default("aberto")
+
+  status      String    @default("aberto")
   response    String?
-  done        Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  done        Boolean   @default(false)
+
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt      @db.Timestamptz(6)
 }
