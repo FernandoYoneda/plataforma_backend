@@ -13,17 +13,15 @@
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:deploy": "prisma migrate deploy",
     "db:seed": "node prisma/seed.js",
-    "build": "npm ci --include=dev && npx prisma generate && npx prisma migrate deploy && node prisma/seed.js",
     "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@prisma/client": "6.14.0",
-    "bcryptjs": "^3.0.2",
+    "@prisma/client": "^6.14.0",
     "cors": "^2.8.5",
     "express": "^4.19.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.0",
-    "prisma": "6.14.0"
+    "prisma": "^6.14.0"
   }
 }

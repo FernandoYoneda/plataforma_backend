@@ -22,12 +22,15 @@ model Settings {
 }
 
 model Order {
-  id          Int       @id @default(autoincrement())
-  item        String
-  qty         Int
-  notes       String?
-  sector      String?
-  nameOrStore String?
+  id              Int       @id @default(autoincrement())
+  item            String
+  qty             Int
+  notes           String?
+  sector          String?
+  nameOrStore     String?
+  requesterEmail  String?
+  requesterName   String?
+  requesterSector String?
 
   status      String    @default("aberto")
   response    String?
@@ -38,11 +41,14 @@ model Order {
 }
 
 model TiTicket {
-  id          Int       @id @default(autoincrement())
-  title       String
-  description String
-  sector      String?
-  nameOrStore String?
+  id              Int       @id @default(autoincrement())
+  title           String
+  description     String
+  sector          String?
+  nameOrStore     String?
+  requesterEmail  String?
+  requesterName   String?
+  requesterSector String?
 
   status      String    @default("aberto")
   response    String?
