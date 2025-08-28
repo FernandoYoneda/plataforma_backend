@@ -1,264 +1,286 @@
-require("dotenv").config();
+// server.js
 const express = require("express");
+const cors = require("cors");
 const { PrismaClient } = require("@prisma/client");
 
-const prisma = new PrismaClient();
 const app = express();
+const prisma = new PrismaClient();
 
 const PORT = process.env.PORT || 10000;
 
-// --------- CORS dinâmico ---------
-const ALLOWED = (process.env.ALLOWED_ORIGINS || "")
+// ====== CORS ======
+const raw = process.env.ALLOWED_ORIGINS || "";
+const allowedOrigins = raw
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  res.header("Vary", "Origin");
-  if (origin && (ALLOWED.length === 0 || ALLOWED.includes(origin))) {
-    res.header("Access-Control-Allow-Origin", origin);
-    res.header("Access-Control-Allow-Credentials", "true");
-  }
-  res.header(
-    "Access-Control-Allow-Methods",
-    "GET,POST,PATCH,PUT,DELETE,OPTIONS"
-  );
-  res.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
+app.use(
+  cors({
+    origin: function (origin, cb) {
+      if (!origin) return cb(null, true); // dev tools / curl
+      if (allowedOrigins.length === 0) return cb(null, true);
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      cb(new Error("Not allowed by CORS: " + origin));
+    },
+    credentials: true,
+  })
+);
 
 app.use(express.json());
 
-// ---------- Health / Debug ----------
-app.get("/api/health", async (_req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({ ok: true, db: "ok", allowedOrigins: ALLOWED });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-app.get("/api/debug/cors", (req, res) => {
-  res.json({
-    originReceived: req.headers.origin || null,
-    allowedOrigins: ALLOWED,
-    corsApplied:
-      !!req.headers.origin &&
-      (ALLOWED.length === 0 || ALLOWED.includes(req.headers.origin)),
-  });
-});
-
-// ---------- Auth ----------
-app.post("/api/login", async (req, res, next) => {
+// ====== LOGIN (sem JWT, simples por papel) ======
+app.post("/api/login", async (req, res) => {
   try {
     const email = (req.body?.email || "").trim();
     const password = (req.body?.password || "").trim();
-    if (!email || !password)
-      return res.status(400).json({ error: "Email e senha são obrigatórios" });
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "E-mail e senha obrigatórios" });
+    }
 
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) return res.status(401).json({ error: "Credenciais inválidas" });
+    if (!user || user.password !== password) {
+      return res.status(401).json({ error: "Credenciais inválidas" });
+    }
 
-    const ok = password === user.password; // se usar bcrypt, ajuste aqui
-    if (!ok) return res.status(401).json({ error: "Credenciais inválidas" });
-
-    res.json({ role: user.role, email: user.email });
-  } catch (e) {
-    next(e);
+    // responde apenas com o papel que o frontend usa
+    res.json({ role: user.role });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ error: "Erro interno" });
   }
 });
 
-// ---------- Settings (global legado) ----------
-app.get("/api/settings", async (_req, res, next) => {
+// ====== SETTINGS (id fixo = 1) ======
+app.get("/api/settings", async (_req, res) => {
   try {
-    const s = await prisma.settings.findUnique({ where: { id: 1 } });
-    res.json(s || { id: 1, sector: "", nameOrStore: "" });
+    const settings = await prisma.settings.findUnique({ where: { id: 1 } });
+    res.json(settings || { id: 1, sector: "", nameOrStore: "" });
   } catch (e) {
-    next(e);
+    console.error(e);
+    res.status(500).json({ error: "Erro ao carregar settings" });
   }
 });
 
-app.post("/api/settings", async (req, res, next) => {
+app.post("/api/settings", async (req, res) => {
   try {
-    const { sector, nameOrStore } = req.body || {};
-    const saved = await prisma.settings.upsert({
-      where: { id: 1 },
-      update: { sector: sector || "", nameOrStore: nameOrStore || "" },
-      create: { id: 1, sector: sector || "", nameOrStore: nameOrStore || "" },
-    });
-    res.json(saved);
-  } catch (e) {
-    next(e);
-  }
-});
+    const sector = (req.body?.sector || "").trim();
+    const nameOrStore = (req.body?.nameOrStore || "").trim();
 
-// ---------- Orders (Materiais) ----------
-app.get("/api/orders", async (req, res, next) => {
-  try {
-    const {
-      requesterEmail,
-      requesterName,
-      requesterSector,
-      sector,
-      nameOrStore,
-    } = req.query;
-    const where = {};
-    if (requesterEmail) where.requesterEmail = requesterEmail;
-    if (requesterName) where.requesterName = requesterName;
-    if (requesterSector) where.requesterSector = requesterSector;
-    if (sector && !where.requesterSector) where.sector = sector; // compat
-    if (nameOrStore && !where.requesterName) where.nameOrStore = nameOrStore; // compat
-
-    const list = await prisma.order.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-    });
-    res.json(list);
-  } catch (e) {
-    next(e);
-  }
-});
-
-app.post("/api/orders", async (req, res, next) => {
-  try {
-    const {
-      item,
-      qty,
-      notes,
-      sector,
-      nameOrStore,
-      requesterEmail,
-      requesterName,
-      requesterSector,
-    } = req.body || {};
-
-    if (!item || !qty)
+    if (!sector || !nameOrStore) {
       return res
         .status(400)
-        .json({ error: "Item e quantidade são obrigatórios" });
+        .json({ error: "Campos 'sector' e 'nameOrStore' são obrigatórios" });
+    }
 
-    const created = await prisma.order.create({
-      data: {
-        item,
-        qty: Number(qty),
-        notes: notes || null,
-        sector: sector || null,
-        nameOrStore: nameOrStore || null,
-        requesterEmail: requesterEmail || null,
-        requesterName: requesterName || null,
-        requesterSector: requesterSector || null,
-      },
+    const updated = await prisma.settings.upsert({
+      where: { id: 1 },
+      update: { sector, nameOrStore },
+      create: { id: 1, sector, nameOrStore },
     });
-    res.status(201).json(created);
-  } catch (e) {
-    next(e);
-  }
-});
 
-app.patch("/api/orders/:id/status", async (req, res, next) => {
-  try {
-    const id = Number(req.params.id);
-    const { status, response } = req.body || {};
-    const data = {};
-    if (status) data.status = status;
-    if (typeof response === "string") data.response = response;
-    if (status === "finalizado") data.done = true;
-    if (status === "aberto") data.done = false;
-    const updated = await prisma.order.update({ where: { id }, data });
     res.json(updated);
   } catch (e) {
-    next(e);
+    console.error(e);
+    res.status(500).json({ error: "Erro ao salvar settings" });
   }
 });
 
-// ---------- TI Tickets ----------
-app.get("/api/ti/tickets", async (req, res, next) => {
-  try {
-    const {
-      requesterEmail,
-      requesterName,
-      requesterSector,
-      sector,
-      nameOrStore,
-    } = req.query;
-    const where = {};
-    if (requesterEmail) where.requesterEmail = requesterEmail;
-    if (requesterName) where.requesterName = requesterName;
-    if (requesterSector) where.requesterSector = requesterSector;
-    if (sector && !where.requesterSector) where.sector = sector; // compat
-    if (nameOrStore && !where.requesterName) where.nameOrStore = nameOrStore; // compat
+// ====== ORDERS (Materiais) ======
 
-    const list = await prisma.tiTicket.findMany({
+// GET /api/orders?status=&sector=&nameOrStore=&q=
+app.get("/api/orders", async (req, res) => {
+  try {
+    const { status, sector, nameOrStore, q } = req.query;
+
+    const where = {};
+    if (status) where.status = String(status);
+    if (sector) where.sector = String(sector);
+    if (nameOrStore) where.nameOrStore = String(nameOrStore);
+
+    if (q) {
+      const text = String(q);
+      where.OR = [
+        { item: { contains: text, mode: "insensitive" } },
+        { obs: { contains: text, mode: "insensitive" } },
+        { response: { contains: text, mode: "insensitive" } },
+      ];
+    }
+
+    const orders = await prisma.order.findMany({
       where,
       orderBy: { createdAt: "desc" },
     });
-    res.json(list);
+
+    res.json(orders);
   } catch (e) {
-    next(e);
+    console.error("GET /api/orders error:", e);
+    res.status(500).json({ error: "Erro ao listar pedidos" });
   }
 });
 
-app.post("/api/ti/tickets", async (req, res, next) => {
+// POST /api/orders
+app.post("/api/orders", async (req, res) => {
   try {
     const {
-      title,
-      description,
       sector,
       nameOrStore,
-      requesterEmail,
-      requesterName,
-      requesterSector,
+      item,
+      quantity,
+      obs, // observação do solicitante
     } = req.body || {};
 
-    if (!title || !description)
-      return res
-        .status(400)
-        .json({ error: "Título e descrição são obrigatórios" });
+    if (!sector || !nameOrStore || !item || !quantity) {
+      return res.status(400).json({
+        error:
+          "Campos 'sector', 'nameOrStore', 'item' e 'quantity' são obrigatórios",
+      });
+    }
 
-    const created = await prisma.tiTicket.create({
+    const order = await prisma.order.create({
       data: {
-        title,
-        description,
-        sector: sector || null,
-        nameOrStore: nameOrStore || null,
-        requesterEmail: requesterEmail || null,
-        requesterName: requesterName || null,
-        requesterSector: requesterSector || null,
+        sector,
+        nameOrStore,
+        item,
+        quantity: Number(quantity),
+        obs: obs || "",
         status: "aberto",
       },
     });
-    res.status(201).json(created);
+
+    res.status(201).json(order);
   } catch (e) {
-    next(e);
+    console.error("POST /api/orders error:", e);
+    res.status(500).json({ error: "Erro ao criar pedido" });
   }
 });
 
-app.patch("/api/ti/tickets/:id/status", async (req, res, next) => {
+// PUT /api/orders/:id
+app.put("/api/orders/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { status, response } = req.body || {};
-    const data = {};
-    if (status) data.status = status;
-    if (typeof response === "string") data.response = response;
-    if (status === "finalizado") data.done = true;
-    if (status === "aberto") data.done = false;
-    const updated = await prisma.tiTicket.update({ where: { id }, data });
+    if (!id) return res.status(400).json({ error: "ID inválido" });
+
+    // campos que podem ser atualizados
+    const patch = {};
+    if (req.body.status) patch.status = String(req.body.status);
+    if (typeof req.body.response === "string")
+      patch.response = req.body.response;
+
+    const exists = await prisma.order.findUnique({ where: { id } });
+    if (!exists)
+      return res.status(404).json({ error: "Pedido não encontrado" });
+
+    const updated = await prisma.order.update({
+      where: { id },
+      data: patch,
+    });
+
     res.json(updated);
   } catch (e) {
-    next(e);
+    console.error("PUT /api/orders/:id error:", e);
+    res.status(500).json({ error: "Erro ao atualizar pedido" });
   }
 });
 
-// ---------- Error handler ----------
-app.use((err, _req, res, _next) => {
-  console.error("UNCAUGHT ERROR:", err);
-  res.status(500).json({ error: err?.message || "Erro interno no servidor" });
+// ====== TI TICKETS ======
+
+// GET /api/ti/tickets?status=&sector=&nameOrStore=&q=
+app.get("/api/ti/tickets", async (req, res) => {
+  try {
+    const { status, sector, nameOrStore, q } = req.query;
+
+    const where = {};
+    if (status) where.status = String(status);
+    if (sector) where.sector = String(sector);
+    if (nameOrStore) where.nameOrStore = String(nameOrStore);
+
+    if (q) {
+      const text = String(q);
+      where.OR = [
+        { title: { contains: text, mode: "insensitive" } },
+        { description: { contains: text, mode: "insensitive" } },
+        { response: { contains: text, mode: "insensitive" } },
+      ];
+    }
+
+    const tickets = await prisma.tiTicket.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+    });
+
+    res.json(tickets);
+  } catch (e) {
+    console.error("GET /api/ti/tickets error:", e);
+    res.status(500).json({ error: "Erro ao listar chamados" });
+  }
 });
+
+// POST /api/ti/tickets
+app.post("/api/ti/tickets", async (req, res) => {
+  try {
+    const {
+      sector,
+      nameOrStore,
+      title,
+      description, // descrição do solicitante (TI)
+    } = req.body || {};
+
+    if (!sector || !nameOrStore || !title) {
+      return res.status(400).json({
+        error: "Campos 'sector', 'nameOrStore' e 'title' são obrigatórios",
+      });
+    }
+
+    const ticket = await prisma.tiTicket.create({
+      data: {
+        sector,
+        nameOrStore,
+        title,
+        description: description || "",
+        status: "aberto",
+      },
+    });
+
+    res.status(201).json(ticket);
+  } catch (e) {
+    console.error("POST /api/ti/tickets error:", e);
+    res.status(500).json({ error: "Erro ao abrir chamado" });
+  }
+});
+
+// PUT /api/ti/tickets/:id
+app.put("/api/ti/tickets/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "ID inválido" });
+
+    const patch = {};
+    if (req.body.status) patch.status = String(req.body.status);
+    if (typeof req.body.response === "string")
+      patch.response = req.body.response;
+
+    const exists = await prisma.tiTicket.findUnique({ where: { id } });
+    if (!exists)
+      return res.status(404).json({ error: "Chamado não encontrado" });
+
+    const updated = await prisma.tiTicket.update({
+      where: { id },
+      data: patch,
+    });
+
+    res.json(updated);
+  } catch (e) {
+    console.error("PUT /api/ti/tickets/:id error:", e);
+    res.status(500).json({ error: "Erro ao atualizar chamado" });
+  }
+});
+
+// ====== HEALTHCHECK ======
+app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
-  console.log("CORS whitelist:", ALLOWED);
+  console.log("CORS whitelist:", allowedOrigins);
 });

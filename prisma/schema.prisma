@@ -9,10 +9,10 @@ generator client {
 }
 
 model User {
-  id       Int    @id @default(autoincrement())
-  email    String @unique
+  id       Int     @id @default(autoincrement())
+  email    String  @unique
   password String
-  role     String
+  role     String  // 'solicitante' | 'responsavel' | 'solicitante_ti' | 'responsavel_ti'
 }
 
 model Settings {
@@ -22,38 +22,25 @@ model Settings {
 }
 
 model Order {
-  id              Int       @id @default(autoincrement())
-  item            String
-  qty             Int
-  notes           String?
-  sector          String?
-  nameOrStore     String?
-  requesterEmail  String?
-  requesterName   String?
-  requesterSector String?
-
-  status      String    @default("aberto")
+  id          Int      @id @default(autoincrement())
+  item        String
+  quantity    Int      @default(1)          // ✅ valor padrão
+  sector      String
+  nameOrStore String
+  status      String   @default("aberto")
   response    String?
-  done        Boolean   @default(false)
-
-  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime  @updatedAt      @db.Timestamptz(6)
+  obs         String?
+  createdAt   DateTime @default(now())
 }
 
+
 model TiTicket {
-  id              Int       @id @default(autoincrement())
-  title           String
-  description     String
-  sector          String?
-  nameOrStore     String?
-  requesterEmail  String?
-  requesterName   String?
-  requesterSector String?
-
-  status      String    @default("aberto")
-  response    String?
-  done        Boolean   @default(false)
-
-  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime  @updatedAt      @db.Timestamptz(6)
+  id          Int      @id @default(autoincrement())
+  title       String
+  description String?
+  sector      String
+  nameOrStore String
+  status      String   @default("aberto")      // 'aberto' | 'em_andamento' | 'finalizado'
+  response    String?                           // feedback do responsável de TI
+  createdAt   DateTime @default(now())
 }
