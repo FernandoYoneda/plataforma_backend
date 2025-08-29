@@ -12,6 +12,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:deploy": "prisma migrate deploy",
+    "prisma:resolve:rb": "prisma migrate resolve --rolled-back 20250825123533_add_obs_to_order",
     "db:seed": "node prisma/seed.js",
     "postinstall": "prisma generate"
   },
