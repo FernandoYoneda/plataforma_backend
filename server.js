@@ -7,162 +7,150 @@ const { PrismaClient } = require("@prisma/client");
 const app = express();
 const prisma = new PrismaClient();
 
+// ENV
 const PORT = process.env.PORT || 10000;
 const ALLOWED = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// CORS
-const corsOptions = {
-  origin: function (origin, cb) {
-    if (!origin) return cb(null, true); // allow curl/postman
-    if (ALLOWED.length === 0) return cb(null, true);
-    if (ALLOWED.includes(origin)) return cb(null, true);
-    cb(new Error("Not allowed by CORS"));
-  },
-  credentials: true,
-};
-app.use(cors(corsOptions));
-
-// Middlewares
+app.use(morgan("dev"));
 app.use(express.json());
-app.use(morgan("combined"));
 
-// Helper: resposta de erro sempre em JSON
-function sendError(res, status, message) {
-  res.status(status).json({ error: message || "Erro" });
+// CORS
+if (ALLOWED.length > 0) {
+  app.use(
+    cors({
+      origin: function (origin, cb) {
+        if (!origin) return cb(null, true); // curl/postman
+        const ok = ALLOWED.includes(origin);
+        cb(ok ? null : new Error("Not allowed by CORS"), ok);
+      },
+      credentials: true,
+    })
+  );
+} else {
+  app.use(cors());
 }
 
-// -------------------- AUTH --------------------
-app.post("/api/login", async (req, res) => {
+// Healthcheck
+app.get("/health", (req, res) => {
+  res.json({ ok: true, now: new Date().toISOString() });
+});
+
+/**
+ * Helpers
+ */
+function pick(obj, keys) {
+  const out = {};
+  keys.forEach((k) => {
+    if (obj[k] !== undefined) out[k] = obj[k];
+  });
+  return out;
+}
+
+/**
+ * LOGIN
+ */
+app.post("/api/login", async (req, res, next) => {
   try {
-    const email = String(req.body?.email || "").trim();
-    const password = String(req.body?.password || "").trim();
+    const email = (req.body?.email || "").trim();
+    const password = (req.body?.password || "").trim();
 
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user || user.password !== password) {
-      return sendError(res, 401, "Credenciais inválidas");
+      return res.status(401).json({ error: "Credenciais inválidas" });
     }
     res.json({ role: user.role });
   } catch (e) {
-    console.error("LOGIN ERROR:", e);
-    return sendError(res, 500, "Falha no login");
+    next(e);
   }
 });
 
-// -------------------- SETTINGS --------------------
-let cachedSettings = { sector: "", nameOrStore: "" };
-
-app.get("/api/settings", (req, res) => {
-  res.json(cachedSettings);
-});
-
-app.post("/api/settings", (req, res) => {
-  const sector = String(req.body?.sector || "").trim();
-  const nameOrStore = String(req.body?.nameOrStore || "").trim();
-  cachedSettings = { sector, nameOrStore };
-  res.json(cachedSettings);
-});
-
-// -------------------- ORDERS (Materiais) --------------------
-// GET /api/orders?status=&sector=&nameOrStore=&q=&page=&pageSize=
-app.get("/api/orders", async (req, res) => {
+/**
+ * ORDERS (Materiais)
+ */
+app.get("/api/orders", async (req, res, next) => {
   try {
-    const {
-      status,
-      sector,
-      nameOrStore,
-      q = "",
-      page = "1",
-      pageSize = "50",
-    } = req.query;
+    const { status, sector, nameOrStore, q } = req.query;
 
     const where = {};
-    if (status) where.status = String(status);
-    if (sector) where.sector = String(sector);
-    if (nameOrStore) where.nameOrStore = String(nameOrStore);
+    if (status) where.status = status;
+    if (sector) where.sector = sector;
+    if (nameOrStore) where.nameOrStore = nameOrStore;
+
     if (q) {
       where.OR = [
-        { item: { contains: String(q), mode: "insensitive" } },
-        { obs: { contains: String(q), mode: "insensitive" } },
-        { response: { contains: String(q), mode: "insensitive" } },
+        { item: { contains: q, mode: "insensitive" } },
+        { obs: { contains: q, mode: "insensitive" } },
+        { response: { contains: q, mode: "insensitive" } },
       ];
     }
 
-    const skip = (Number(page) - 1) * Number(pageSize);
-    const take = Number(pageSize);
-
-    const [total, items] = await Promise.all([
-      prisma.order.count({ where }),
-      prisma.order.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take,
-      }),
-    ]);
-
-    res.json({
-      total,
-      page: Number(page),
-      pageSize: Number(pageSize),
-      items,
+    const orders = await prisma.order.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
     });
+
+    res.json(orders);
   } catch (e) {
-    console.error("GET /orders ERROR:", e);
-    return sendError(res, 500, "Erro ao listar pedidos");
+    next(e);
   }
 });
 
-// POST /api/orders
-app.post("/api/orders", async (req, res) => {
+app.post("/api/orders", async (req, res, next) => {
   try {
-    const {
-      sector,
-      nameOrStore,
-      item,
-      quantity = 1,
-      obs = "",
-    } = req.body || {};
-    if (!sector || !nameOrStore || !item) {
-      return sendError(
-        res,
-        400,
-        "Campos obrigatórios: sector, nameOrStore, item"
-      );
+    const payload = pick(req.body || {}, [
+      "item",
+      "quantity",
+      "obs",
+      "sector",
+      "nameOrStore",
+    ]);
+
+    if (
+      !payload.item ||
+      !payload.quantity ||
+      !payload.sector ||
+      !payload.nameOrStore
+    ) {
+      return res
+        .status(400)
+        .json({
+          error: "item, quantity, sector e nameOrStore são obrigatórios",
+        });
     }
 
     const created = await prisma.order.create({
       data: {
-        sector: String(sector),
-        nameOrStore: String(nameOrStore),
-        item: String(item),
-        quantity: Number(quantity) || 1,
-        obs: String(obs || ""),
+        item: String(payload.item),
+        quantity: Number(payload.quantity),
+        obs: payload.obs ? String(payload.obs) : null,
+        sector: String(payload.sector),
+        nameOrStore: String(payload.nameOrStore),
         status: "aberto",
       },
     });
+
     res.status(201).json(created);
   } catch (e) {
-    console.error("POST /orders ERROR:", e);
-    return sendError(res, 500, "Erro ao criar pedido");
+    next(e);
   }
 });
 
-// PUT /api/orders/:id
-app.put("/api/orders/:id", async (req, res) => {
+app.put("/api/orders/:id", async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    if (!id) return sendError(res, 400, "ID inválido");
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
 
-    // Somente os campos permitidos
-    const patch = {};
-    if (req.body.hasOwnProperty("status"))
-      patch.status = String(req.body.status);
-    if (req.body.hasOwnProperty("response"))
-      patch.response = String(req.body.response);
-
+    const patch = pick(req.body || {}, [
+      "status",
+      "response",
+      "obs",
+      "quantity",
+    ]);
     const updated = await prisma.order.update({
       where: { id },
       data: patch,
@@ -170,102 +158,82 @@ app.put("/api/orders/:id", async (req, res) => {
 
     res.json(updated);
   } catch (e) {
-    if (e.code === "P2025") return sendError(res, 404, "Pedido não encontrado");
-    console.error("PUT /orders/:id ERROR:", e);
-    return sendError(res, 500, "Erro ao atualizar pedido");
+    if (e.code === "P2025") {
+      return res.status(404).json({ error: "Pedido não encontrado" });
+    }
+    next(e);
   }
 });
 
-// -------------------- TI TICKETS --------------------
-// GET /api/ti/tickets?status=&sector=&nameOrStore=&q=&page=&pageSize=
-app.get("/api/ti/tickets", async (req, res) => {
+/**
+ * TI TICKETS
+ */
+app.get("/api/ti/tickets", async (req, res, next) => {
   try {
-    const {
-      status,
-      sector,
-      nameOrStore,
-      q = "",
-      page = "1",
-      pageSize = "50",
-    } = req.query;
+    const { status, sector, nameOrStore, q } = req.query;
 
     const where = {};
-    if (status) where.status = String(status);
-    if (sector) where.sector = String(sector);
-    if (nameOrStore) where.nameOrStore = String(nameOrStore);
+    if (status) where.status = status;
+    if (sector) where.sector = sector;
+    if (nameOrStore) where.nameOrStore = nameOrStore;
     if (q) {
       where.OR = [
-        { title: { contains: String(q), mode: "insensitive" } },
-        { description: { contains: String(q), mode: "insensitive" } },
-        { response: { contains: String(q), mode: "insensitive" } },
+        { title: { contains: q, mode: "insensitive" } },
+        { description: { contains: q, mode: "insensitive" } },
+        { response: { contains: q, mode: "insensitive" } },
       ];
     }
 
-    const skip = (Number(page) - 1) * Number(pageSize);
-    const take = Number(pageSize);
-
-    const [total, items] = await Promise.all([
-      prisma.tiTicket.count({ where }),
-      prisma.tiTicket.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take,
-      }),
-    ]);
-
-    res.json({
-      total,
-      page: Number(page),
-      pageSize: Number(pageSize),
-      items,
+    const tickets = await prisma.tiTicket.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
     });
+
+    res.json(tickets);
   } catch (e) {
-    console.error("GET /ti/tickets ERROR:", e);
-    return sendError(res, 500, "Erro ao listar chamados");
+    next(e);
   }
 });
 
-// POST /api/ti/tickets
-app.post("/api/ti/tickets", async (req, res) => {
+app.post("/api/ti/tickets", async (req, res, next) => {
   try {
-    const { sector, nameOrStore, title, description = "" } = req.body || {};
-    if (!sector || !nameOrStore || !title) {
-      return sendError(
-        res,
-        400,
-        "Campos obrigatórios: sector, nameOrStore, title"
-      );
+    const payload = pick(req.body || {}, [
+      "title",
+      "description",
+      "sector",
+      "nameOrStore",
+    ]);
+
+    if (!payload.title || !payload.sector || !payload.nameOrStore) {
+      return res
+        .status(400)
+        .json({ error: "title, sector e nameOrStore são obrigatórios" });
     }
 
     const created = await prisma.tiTicket.create({
       data: {
-        sector: String(sector),
-        nameOrStore: String(nameOrStore),
-        title: String(title),
-        description: String(description || ""),
+        title: String(payload.title),
+        description: payload.description ? String(payload.description) : null,
+        sector: String(payload.sector),
+        nameOrStore: String(payload.nameOrStore),
         status: "aberto",
       },
     });
+
     res.status(201).json(created);
   } catch (e) {
-    console.error("POST /ti/tickets ERROR:", e);
-    return sendError(res, 500, "Erro ao criar chamado");
+    next(e);
   }
 });
 
-// PUT /api/ti/tickets/:id
-app.put("/api/ti/tickets/:id", async (req, res) => {
+app.put("/api/ti/tickets/:id", async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    if (!id) return sendError(res, 400, "ID inválido");
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
 
-    const patch = {};
-    if (req.body.hasOwnProperty("status"))
-      patch.status = String(req.body.status);
-    if (req.body.hasOwnProperty("response"))
-      patch.response = String(req.body.response);
-
+    const patch = pick(req.body || {}, ["status", "response", "description"]);
     const updated = await prisma.tiTicket.update({
       where: { id },
       data: patch,
@@ -273,30 +241,33 @@ app.put("/api/ti/tickets/:id", async (req, res) => {
 
     res.json(updated);
   } catch (e) {
-    if (e.code === "P2025")
-      return sendError(res, 404, "Chamado não encontrado");
-    console.error("PUT /ti/tickets/:id ERROR:", e);
-    return sendError(res, 500, "Erro ao atualizar chamado");
+    if (e.code === "P2025") {
+      return res.status(404).json({ error: "Chamado não encontrado" });
+    }
+    next(e);
   }
 });
 
-// Health
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
-});
-
-// Fallback 404 JSON
+/**
+ * 404 em JSON
+ */
 app.use((req, res) => {
-  res.status(404).json({ error: "Not Found" });
+  res.status(404).json({ error: "Rota não encontrada" });
 });
 
-// Erro final JSON
+/**
+ * Error handler em JSON
+ */
 app.use((err, req, res, next) => {
-  console.error("UNCAUGHT:", err);
-  res.status(500).json({ error: "Erro interno" });
+  // Log básico:
+  console.error("UNCAUGHT ERROR:", err);
+  const status = err.status || 500;
+  res.status(status).json({
+    error: err.message || "Erro interno",
+  });
 });
 
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
-  console.log("CORS whitelist:", ALLOWED);
+  console.log("CORS whitelist:", ALLOWED.length ? ALLOWED : "*");
 });
