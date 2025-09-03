@@ -38,6 +38,28 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, now: new Date().toISOString() });
 });
 
+// Teste de conexão/usuário atual no banco
+app.get("/health/db", async (req, res) => {
+  try {
+    const rows = await prisma.$queryRaw`select current_user as user, current_database() as db`;
+    res.json({ ok: true, db: rows[0] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// (Opcional) Listar usuários para conferir seed (REMOVA depois!)
+app.get("/debug/users", async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      select: { id: true, email: true, role: true }
+    });
+    res.json(users);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 /**
  * Helpers
  */
