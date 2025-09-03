@@ -1,22 +1,21 @@
-// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-generator client {
-  provider = "prisma-client-js"
-}
-
 model User {
-  id       Int     @id @default(autoincrement())
-  email    String  @unique
+  id       Int    @id @default(autoincrement())
+  email    String @unique
   password String
-  role     String  // 'solicitante' | 'responsavel' | 'solicitante_ti' | 'responsavel_ti'
+  role     String
 }
 
 model Settings {
-  id          Int    @id
+  id          Int    @id @default(1)
   sector      String
   nameOrStore String
 }
@@ -24,15 +23,16 @@ model Settings {
 model Order {
   id          Int      @id @default(autoincrement())
   item        String
-  quantity    Int      @default(1)          // ✅ valor padrão
   sector      String
   nameOrStore String
+  role        String?
+  createdAt   DateTime @default(now())
   status      String   @default("aberto")
   response    String?
+  nameorstore String?
   obs         String?
-  createdAt   DateTime @default(now())
+  quantity    Int      @default(1)
 }
-
 
 model TiTicket {
   id          Int      @id @default(autoincrement())
@@ -40,7 +40,9 @@ model TiTicket {
   description String?
   sector      String
   nameOrStore String
-  status      String   @default("aberto")      // 'aberto' | 'em_andamento' | 'finalizado'
-  response    String?                           // feedback do responsável de TI
+  createdBy   String?
+  status      String   @default("aberto")
   createdAt   DateTime @default(now())
+  response    String?
+  nameorstore String?
 }
