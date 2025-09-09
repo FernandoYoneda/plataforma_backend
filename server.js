@@ -7,6 +7,10 @@ const { PrismaClient } = require("@prisma/client");
 const app = express();
 const prisma = new PrismaClient();
 
+const BUILD_TAG = "orders-put-guard-v3";
+
+
+
 // ENV
 const PORT = process.env.PORT || 10000;
 const ALLOWED = (process.env.ALLOWED_ORIGINS || "")
@@ -33,12 +37,17 @@ if (ALLOWED.length > 0) {
   app.use(cors());
 }
 
-// Healthcheck
+app.get("/debug/version", (req, res) => {
+  res.json({ build: BUILD_TAG, time: new Date().toISOString() });
+});
+
+
+// Health simples
 app.get("/health", (req, res) => {
   res.json({ ok: true, now: new Date().toISOString() });
 });
 
-// Teste de conexão/usuário atual no banco
+// Health DB / debug users (mantenha só durante testes)
 app.get("/health/db", async (req, res) => {
   try {
     const rows = await prisma.$queryRaw`select current_user as user, current_database() as db`;
@@ -47,12 +56,10 @@ app.get("/health/db", async (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
-
-// (Opcional) Listar usuários para conferir seed (REMOVA depois!)
 app.get("/debug/users", async (req, res) => {
   try {
     const users = await prisma.user.findMany({
-      select: { id: true, email: true, role: true }
+      select: { id: true, email: true, role: true },
     });
     res.json(users);
   } catch (e) {
@@ -60,9 +67,7 @@ app.get("/debug/users", async (req, res) => {
   }
 });
 
-/**
- * Helpers
- */
+// Helpers
 function pick(obj, keys) {
   const out = {};
   keys.forEach((k) => {
@@ -120,6 +125,22 @@ app.get("/api/orders", async (req, res, next) => {
   }
 });
 
+// --- Settings (eco simples, sem persistir em DB) ---
+app.post("/api/settings", (req, res) => {
+  const sector = (req.body?.sector || "").trim();
+  const nameOrStore = (req.body?.nameOrStore || "").trim();
+
+  if (!sector || !nameOrStore) {
+    return res
+      .status(400)
+      .json({ error: "sector e nameOrStore são obrigatórios" });
+  }
+
+
+  res.json({ sector, nameOrStore });
+});
+
+
 app.post("/api/orders", async (req, res, next) => {
   try {
     const payload = pick(req.body || {}, [
@@ -132,15 +153,13 @@ app.post("/api/orders", async (req, res, next) => {
 
     if (
       !payload.item ||
-      !payload.quantity ||
+      payload.quantity == null ||
       !payload.sector ||
       !payload.nameOrStore
     ) {
       return res
         .status(400)
-        .json({
-          error: "item, quantity, sector e nameOrStore são obrigatórios",
-        });
+        .json({ error: "item, quantity, sector e nameOrStore são obrigatórios" });
     }
 
     const created = await prisma.order.create({
@@ -160,30 +179,46 @@ app.post("/api/orders", async (req, res, next) => {
   }
 });
 
+// ===== PUT /api/orders/:id (versão auditada) =====
 app.put("/api/orders/:id", async (req, res, next) => {
-  try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) {
-      return res.status(400).json({ error: "ID inválido" });
-    }
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ error: "ID inválido" });
+  }
 
-    const patch = pick(req.body || {}, [
-      "status",
-      "response",
-      "obs",
-      "quantity",
-    ]);
+  // LOGS que precisamos ver no terminal
+  console.log("[orders PUT] id =", id);
+  console.log("[orders PUT] raw body =", req.body);
+  console.log("[orders PUT] keys =", Object.keys(req.body || {}));
+
+  // Whitelist estrita
+  const allowed = ["status", "response", "obs", "quantity"];
+  const patch = {};
+  for (const k of allowed) {
+    if (req.body?.[k] !== undefined) patch[k] = req.body[k];
+  }
+
+  const unknown = Object.keys(req.body || {}).filter(k => !allowed.includes(k));
+  if (unknown.length) {
+    console.warn("[orders PUT] Ignorando chaves desconhecidas:", unknown);
+  }
+  if (Object.keys(patch).length === 0) {
+    console.warn("[orders PUT] Sem campos válidos. Body=", req.body);
+    return res.status(400).json({ error: "Nenhum campo válido para atualizar" });
+  }
+
+  try {
     const updated = await prisma.order.update({
       where: { id },
       data: patch,
     });
-
-    res.json(updated);
+    return res.json(updated);
   } catch (e) {
     if (e.code === "P2025") {
       return res.status(404).json({ error: "Pedido não encontrado" });
     }
-    next(e);
+    console.error("[orders PUT] ERRO:", { body: req.body, patch }, e);
+    return next(e);
   }
 });
 
@@ -217,6 +252,88 @@ app.get("/api/ti/tickets", async (req, res, next) => {
   }
 });
 
+app.get("/debug/routes", (req, res) => {
+  const routes = [];
+  app._router.stack.forEach((m) => {
+    if (m.route && m.route.path) {
+      routes.push({ method: Object.keys(m.route.methods)[0].toUpperCase(), path: m.route.path });
+    } else if (m.name === 'router' && m.handle?.stack) {
+      m.handle.stack.forEach((s) => {
+        if (s.route?.path) {
+          routes.push({ method: Object.keys(s.route.methods)[0].toUpperCase(), path: s.route.path });
+        }
+      });
+    }
+  });
+  res.json(routes);
+});
+
+// === DIAGNÓSTICOS DE ESQUEMA (cole perto das outras rotas debug) ===
+
+// Lista as colunas reais da tabela "Order" (atenção: maiúscula/minúscula)
+app.get('/debug/columns/order', async (req, res) => {
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'Order'
+      ORDER BY ordinal_position
+    `;
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Mostra o registro "cru" do pedido (por id)
+app.get('/debug/orders/:id/raw', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'ID inválido' });
+  try {
+    const row = await prisma.$queryRawUnsafe(`SELECT * FROM "Order" WHERE id = $1`, id);
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Versão do erro do Prisma mais detalhada
+app.put('/api/orders/:id', async (req, res, next) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'ID inválido' });
+
+  console.log('[orders PUT] id =', id);
+  console.log('[orders PUT] raw body =', req.body);
+  console.log('[orders PUT] keys =', Object.keys(req.body || {}));
+
+  const allowed = ['status', 'response', 'obs', 'quantity'];
+  const patch = {};
+  for (const k of allowed) if (req.body?.[k] !== undefined) patch[k] = req.body[k];
+
+  const unknown = Object.keys(req.body || {}).filter(k => !allowed.includes(k));
+  if (unknown.length) console.warn('[orders PUT] Ignorando chaves desconhecidas:', unknown);
+  if (Object.keys(patch).length === 0) {
+    console.warn('[orders PUT] Sem campos válidos. Body=', req.body);
+    return res.status(400).json({ error: 'Nenhum campo válido para atualizar' });
+  }
+
+  try {
+    const updated = await prisma.order.update({ where: { id }, data: patch });
+    return res.json(updated);
+  } catch (e) {
+    // Log estendido do Prisma
+    console.error('[orders PUT] ERRO DETALHADO:', {
+      prismaCode: e.code,
+      prismaMeta: e.meta,
+      message: e.message,
+      patch
+    });
+    if (e.code === 'P2025') return res.status(404).json({ error: 'Pedido não encontrado' });
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+
 app.post("/api/ti/tickets", async (req, res, next) => {
   try {
     const payload = pick(req.body || {}, [
@@ -249,39 +366,49 @@ app.post("/api/ti/tickets", async (req, res, next) => {
 });
 
 app.put("/api/ti/tickets/:id", async (req, res, next) => {
-  try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) {
-      return res.status(400).json({ error: "ID inválido" });
-    }
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ error: "ID inválido" });
+  }
 
-    const patch = pick(req.body || {}, ["status", "response", "description"]);
+  // ✅ whitelist
+  const allowed = ["status", "response", "description"];
+  const patch = {};
+  for (const k of allowed) {
+    if (req.body?.[k] !== undefined) patch[k] = req.body[k];
+  }
+
+  const unknown = Object.keys(req.body || {}).filter((k) => !allowed.includes(k));
+  if (unknown.length) {
+    console.warn("[tickets PUT] Ignorando chaves desconhecidas:", unknown);
+  }
+  if (Object.keys(patch).length === 0) {
+    console.warn("[tickets PUT] Payload vazio ou inválido. Body=", req.body);
+    return res.status(400).json({ error: "Nenhum campo válido para atualizar" });
+  }
+
+  try {
     const updated = await prisma.tiTicket.update({
       where: { id },
       data: patch,
     });
-
     res.json(updated);
   } catch (e) {
     if (e.code === "P2025") {
       return res.status(404).json({ error: "Chamado não encontrado" });
     }
+    console.error("[tickets PUT] Erro no update. Body=", req.body, "Patch=", patch, e);
     next(e);
   }
 });
 
-/**
- * 404 em JSON
- */
+/** 404 JSON */
 app.use((req, res) => {
   res.status(404).json({ error: "Rota não encontrada" });
 });
 
-/**
- * Error handler em JSON
- */
+/** Error handler JSON */
 app.use((err, req, res, next) => {
-  // Log básico:
   console.error("UNCAUGHT ERROR:", err);
   const status = err.status || 500;
   res.status(status).json({
@@ -293,3 +420,5 @@ app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
   console.log("CORS whitelist:", ALLOWED.length ? ALLOWED : "*");
 });
+
+console.log("BUILD_TAG:", BUILD_TAG);

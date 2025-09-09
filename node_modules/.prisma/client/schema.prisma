@@ -25,13 +25,16 @@ model Order {
   item        String
   sector      String
   nameOrStore String
-  role        String?
   createdAt   DateTime @default(now())
   status      String   @default("aberto")
   response    String?
-  nameorstore String?
   obs         String?
   quantity    Int      @default(1)
+
+  @@index([createdAt(sort: Desc)], map: "idx_order_createdat")
+  @@index([nameOrStore], map: "idx_order_nameorstore")
+  @@index([sector], map: "idx_order_sector")
+  @@index([status], map: "idx_order_status")
 }
 
 model TiTicket {
@@ -45,4 +48,9 @@ model TiTicket {
   createdAt   DateTime @default(now())
   response    String?
   nameorstore String?
+
+  @@index([createdAt(sort: Desc)], map: "idx_titicket_createdat")
+  @@index([nameOrStore], map: "idx_titicket_nameorstore")
+  @@index([sector], map: "idx_titicket_sector")
+  @@index([status], map: "idx_titicket_status")
 }
