@@ -14,12 +14,6 @@ model User {
   role     String
 }
 
-model Settings {
-  id          Int    @id @default(1)
-  sector      String
-  nameOrStore String
-}
-
 model Order {
   id          Int      @id @default(autoincrement())
   item        String
@@ -43,14 +37,18 @@ model TiTicket {
   description String?
   sector      String
   nameOrStore String
-  createdBy   String?
   status      String   @default("aberto")
-  createdAt   DateTime @default(now())
   response    String?
-  nameorstore String?
+  createdAt   DateTime @default(now())
 
   @@index([createdAt(sort: Desc)], map: "idx_titicket_createdat")
   @@index([nameOrStore], map: "idx_titicket_nameorstore")
   @@index([sector], map: "idx_titicket_sector")
   @@index([status], map: "idx_titicket_status")
+}
+
+model Settings {
+  id          Int    @id @default(1) // fixo em 1
+  sector      String
+  nameOrStore String
 }
