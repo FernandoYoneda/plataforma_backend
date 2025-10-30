@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")         // runtime (pooler)
+  directUrl = env("DIRECT_DATABASE_URL")  // migrations (conexão direta)
 }
 
 model User {
@@ -48,7 +49,7 @@ model TiTicket {
 }
 
 model Settings {
-  id          Int    @id @default(1) // fixo em 1
+  id          Int    @id @default(1)
   sector      String
   nameOrStore String
 }
